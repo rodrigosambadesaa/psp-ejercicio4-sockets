@@ -1,3 +1,120 @@
 package dev.rodrigosambade.seats;
-import java.io.*;import java.net.*;import java.nio.charset.StandardCharsets;import java.util.concurrent.*;
-public final class SeatServer implements AutoCloseable{private final Wagon wagon=new Wagon(4,4);private final ServerSocket server;private final ExecutorService workers=Executors.newFixedThreadPool(16);private volatile boolean running=true;public SeatServer(int p)throws IOException{server=new ServerSocket(p);}public int port(){return server.getLocalPort();}public void serve()throws IOException{while(running){try{Socket s=server.accept();workers.submit(()->handle(s));}catch(SocketException e){if(running)throw e;}}}private void handle(Socket s){try(s;var in=new BufferedReader(new InputStreamReader(s.getInputStream(),StandardCharsets.UTF_8));var out=new BufferedWriter(new OutputStreamWriter(s.getOutputStream(),StandardCharsets.UTF_8))){for(String line;(line=in.readLine())!=null;){if(line.equals("QUIT"))break;String[]p=line.split("\\s+");if(p.length!=3||!p[0].equals("RESERVE")){send(out,"ERROR expected RESERVE row col");continue;}try{var r=wagon.reserve(Integer.parseInt(p[1]),Integer.parseInt(p[2]));send(out,r.status()+"|"+String.join(";",r.freeSeats()));}catch(NumberFormatException e){send(out,"INVALID|");}}}catch(IOException ignored){}}private static void send(BufferedWriter o,String x)throws IOException{o.write(x);o.newLine();o.flush();}@Override public void close()throws IOException{running=false;server.close();workers.shutdownNow();}public static void main(String[]a)throws Exception{int p=a.length>0?Integer.parseInt(a[0]):5000;try(var s=new SeatServer(p)){s.serve();}}}
+
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.SocketException;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+public final class SeatServer implements AutoCloseable {
+
+    private static final int ROWS = 4;
+    private static final int COLUMNS = 4;
+    private static final int MAX_CLIENTS = ROWS * COLUMNS;
+    private static final int DEFAULT_PORT = 5_000;
+
+    private final Wagon wagon = new Wagon(ROWS, COLUMNS);
+    private final ServerSocket serverSocket;
+    private final ExecutorService workers = Executors.newFixedThreadPool(MAX_CLIENTS);
+
+    private volatile boolean running = true;
+
+    public SeatServer(int port) throws IOException {
+        serverSocket = new ServerSocket(port);
+    }
+
+    public int port() {
+        return serverSocket.getLocalPort();
+    }
+
+    public void serve() throws IOException {
+        while (running) {
+            try {
+                Socket socket = serverSocket.accept();
+                workers.submit(() -> handle(socket));
+            } catch (SocketException exception) {
+                if (running) {
+                    throw exception;
+                }
+            }
+        }
+    }
+
+    private void handle(Socket socket) {
+        try (socket;
+             BufferedReader input = new BufferedReader(new InputStreamReader(
+                     socket.getInputStream(),
+                     StandardCharsets.UTF_8));
+             BufferedWriter output = new BufferedWriter(new OutputStreamWriter(
+                     socket.getOutputStream(),
+                     StandardCharsets.UTF_8))) {
+            processCommands(input, output);
+        } catch (IOException ignored) {
+            // A failed client must not stop the server.
+        }
+    }
+
+    private void processCommands(BufferedReader input, BufferedWriter output)
+            throws IOException {
+        String line;
+        while ((line = input.readLine()) != null) {
+            if (line.equals("QUIT")) {
+                return;
+            }
+            processCommand(line, output);
+        }
+    }
+
+    private void processCommand(String line, BufferedWriter output) throws IOException {
+        String[] parts = line.trim().split("\\s+");
+        if (parts.length != 3 || !parts[0].equals("RESERVE")) {
+            send(output, "ERROR expected RESERVE row col");
+            return;
+        }
+
+        try {
+            int row = Integer.parseInt(parts[1]);
+            int column = Integer.parseInt(parts[2]);
+            Wagon.Reservation reservation = wagon.reserve(row, column);
+            sendReservation(output, reservation);
+        } catch (NumberFormatException exception) {
+            send(output, "INVALID|");
+        }
+    }
+
+    private static void sendReservation(
+            BufferedWriter output,
+            Wagon.Reservation reservation) throws IOException {
+        String freeSeats = String.join(";", reservation.freeSeats());
+        send(output, reservation.status() + "|" + freeSeats);
+    }
+
+    private static void send(BufferedWriter output, String message) throws IOException {
+        output.write(message);
+        output.newLine();
+        output.flush();
+    }
+
+    @Override
+    public void close() throws IOException {
+        running = false;
+        serverSocket.close();
+        workers.shutdownNow();
+    }
+
+    public static void main(String[] args) throws IOException {
+        int port = args.length > 0
+                ? Integer.parseInt(args[0])
+                : DEFAULT_PORT;
+
+        try (SeatServer server = new SeatServer(port)) {
+            server.serve();
+        }
+    }
+}
